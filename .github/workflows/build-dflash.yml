@@ -1,0 +1,90 @@
+name: Build dFlash
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        with:
+          vulkan-query-version: 1.3.268.0
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+          vulkan-use-cache: true
+
+      - name: Check prerequisites
+        run: |
+          git --version
+          cmake --version
+          ninja --version || echo "Ninja not found"
+          echo "Vulkan SDK installed"
+
+      - name: Create Build Directory
+        run: mkdir build
+
+      - name: Configure CMake (Try VS 2022)
+        id: configure_vs
+        working-directory: ./build
+        run: |
+          cmake .. -G "Visual Studio 17 2022" -A x64 -DGGML_VULKAN=ON -DDFLASH=ON -DTCQ=ON
+        continue-on-error: true
+
+      - name: Configure CMake (Fallback Ninja)
+        if: steps.configure_vs.outcome == 'failure'
+        working-directory: ./build
+        run: |
+          cmake .. -G Ninja -DGGML_VULKAN=ON -DDFLASH=ON -DTCQ=ON
+
+      - name: Build
+        working-directory: ./build
+        run: |
+          cmake --build . --config Release --parallel
+
+      - name: Verify build succeeded
+        working-directory: ./build
+        run: |
+          if (Test-Path -Path "Release\llama-cli.exe") {
+             Write-Host "Build Succeeded: llama-cli.exe found in Release/."
+          } elseif (Test-Path -Path "llama-cli.exe") {
+             Write-Host "Build Succeeded: llama-cli.exe found in current directory."
+          } else {
+             Write-Host "Build Failed: llama-cli.exe not found."
+             exit 1
+          }
+
+      - name: Run llama-cli.exe --list-gpus
+        working-directory: ./build
+        run: |
+          if (Test-Path -Path "Release\llama-cli.exe") {
+             .\Release\llama-cli.exe --list-gpus
+          } else {
+             .\llama-cli.exe --list-gpus
+          }
+
+      - name: Report
+        if: always()
+        run: |
+          echo "Build Success/Failure: ${{ job.status }}"
+          echo "Binaries located in: build/Release or build/"
+          echo "Please see the logs of previous steps for GPU list and any errors."
+
+      - name: Publish Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: dflash-binaries
+          path: |
+            build/Release/llama-cli.exe
+            build/llama-cli.exe
+            build/Release/*.dll
+            build/*.dll
+          retention-days: 7
